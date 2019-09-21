@@ -8,10 +8,12 @@ import (
   "io/ioutil"
   "time"
   "encoding/json"
+  "net/url"
   "strings"
+  "net/http/cookiejar"
 )
 
-func refreshProxyInfo(app *tview.Application, textView *tview.TextView,
+func refreshProxyInfo(app *tview.Application, client *http.Client, textView *tview.TextView,
   list *tview.List) {
   // TODO: protect against consecutive calls
 
@@ -24,7 +26,7 @@ func refreshProxyInfo(app *tview.Application, textView *tview.TextView,
   textBoxResult := "N/A"
   var proxies []Proxy
 
-  resp, err := http.Get("http://localhost:8081/get-proxies")
+  resp, err := client.Get("http://localhost:8081/get-proxies")
   if err != nil {
     textBoxResult = fmt.Sprintf("Could not retrieve data: %s", err)
     goto finish
@@ -40,7 +42,9 @@ func refreshProxyInfo(app *tview.Application, textView *tview.TextView,
     bodyStr := string(body)
     decoder := json.NewDecoder(strings.NewReader(bodyStr))
     if err := decoder.Decode(&proxies); err != nil{
-      textBoxResult = "Got a reply from the server, but could not decode it"
+      textBoxResult = fmt.Sprintf(
+        "Got a reply from the server, but could not decode it : %s", err)
+        proxies = []Proxy{} // empty the proxies in case they were filled
     } else {
       textBoxResult = "Data successfully retrieved"
     }
@@ -63,15 +67,37 @@ finish:
   })
 }
 
+func doLogin(client *http.Client, formData url.Values,textView *tview.TextView,
+  app *tview.Application) {
+  // TODO: add message before waiting
+  resp, err := client.PostForm("http://localhost:8081/login", formData)
+  resultText := "<N/A>"
+  if err != nil {
+    resultText = "Could not login to the server"
+  } else {
+    resultText = "Login successful!"
+  }
+  resp.Body.Close()
+  app.QueueUpdateDraw(func () {
+    textView.SetText(resultText)
+  })
+}
+
 func main() {
+  cookieJar, _ := cookiejar.New(nil)
+  transport := &http.Transport{
+    IdleConnTimeout: 30*time.Second,
+  }
+  client := &http.Client{Transport: transport, Jar: cookieJar}
+
   app := tview.NewApplication()
 
-  // Set up global layoyt
+  // Set up global layout
   pageInfo := tview.NewTextView().
                   SetDynamicColors(true).
                   SetRegions(true).
                   SetWrap(false).
-                  SetText(`F1 ["1"]HomePage[""]  F2 ["2"]Proxies[""]`)
+                  SetText(`F1 ["1"]Login[""]  F2 ["2"]Proxies[""]  F3 ["3"]Databases[""]`)
   pageInfo.Highlight("1")
 
   pages := tview.NewPages()
@@ -81,45 +107,76 @@ func main() {
                   AddItem(pages, 0, 1, true)
 
   // Set up main page
-  mainPageHello := tview.NewBox().
-                  SetBorder(true).
-                  SetTitle("Short demo")
+  mainPageResultTest := tview.NewTextView()
+  mainPageLoginForm := tview.NewForm().
+                       AddInputField("Login", "", 20, nil, nil).
+                       AddPasswordField("Password", "", 20, '*', nil).
+                       AddDropDown("Server", []string{"http://localhost:8081/",}, 0, nil).
+                       AddButton("Log in", func () {
+                         formData := url.Values{
+                           "username": {"flo"},
+                           "password": {"flo"},
+                         }
+                         go doLogin(client, formData, mainPageResultTest, app)
+                       })
+  mainPageLoginForm.SetBorder(true).SetTitle("Log in to a server").SetTitleAlign(tview.AlignLeft)
   mainPageGrid := tview.NewGrid().
                   SetBorders(true).
-                  AddItem(mainPageHello, 0, 0, 1, 1, 1, 1, false)
-  pages.AddPage("HomePage", mainPageGrid, true, true)
+                  AddItem(mainPageLoginForm, 0, 0, 1, 1, 1, 1, false).
+                  AddItem(mainPageResultTest, 1, 0, 1, 1, 1, 1, false)
+  pages.AddPage("Login", mainPageGrid, true, true)
 
   // Set up proxy list page
   proxyList := tview.NewList()
   proxyInfo := tview.NewTextView().
                SetText("Press <F5> to retrieve proxy information")
-  proxyListMainGrid := tview.NewGrid().
-                       SetRows(3, 0, 3).
-                       SetColumns(30, 0, 30).
-                       SetBorders(true).
-                       AddItem(proxyInfo, 0, 0, 1, 3, 0, 0, true).
-                       AddItem(proxyList, 1, 0, 1, 3, 0, 0, true)
+  proxyListMainGrid := tview.NewFlex().
+                       SetDirection(tview.FlexRow).
+                       AddItem(proxyInfo, 3, 0, false).
+                       AddItem(proxyList, 0, 1, true)
   pages.AddPage("Proxies", proxyListMainGrid, true, false)
+
+  // Set up database list page
+  dbList := tview.NewList()
+  dbInfo := tview.NewTextView().
+               SetText("Press <F5> to retrieve db information")
+  dbListMainGrid := tview.NewFlex().
+                       SetDirection(tview.FlexRow).
+                       AddItem(dbInfo, 3, 0, false).
+                       AddItem(dbList, 0, 1, true)
+  pages.AddPage("Databases", dbListMainGrid, true, false)
+
+  currentPage := 1
 
   // Install event handler
   app.SetInputCapture(func (event *tcell.EventKey) *tcell.EventKey {
     if event.Key() == tcell.KeyEsc {
       app.Stop()
     } else if event.Key() == tcell.KeyF1 {
-      pages.SwitchToPage("HomePage")
+      pages.SwitchToPage("Login")
+      currentPage = 1
       pageInfo.Highlight("1")
+      app.SetFocus(mainPageLoginForm)
     } else if event.Key() == tcell.KeyF2 {
       pages.SwitchToPage("Proxies")
       pageInfo.Highlight("2")
+      currentPage = 2
+      app.SetFocus(proxyList)
+    } else if event.Key() == tcell.KeyF3 {
+      pages.SwitchToPage("Databases")
+      pageInfo.Highlight("3")
+      currentPage = 3
       app.SetFocus(proxyList)
     } else if event.Key() == tcell.KeyF5 {
-      go refreshProxyInfo(app, proxyInfo, proxyList)
+      if currentPage == 2 {
+        go refreshProxyInfo(app, client, proxyInfo, proxyList)
+      }
     }
     return event
   })
 
   // Run application
-  if err := app.SetRoot(globalLayout, true).Run(); err != nil {
+  if err := app.SetRoot(globalLayout, true).SetFocus(mainPageLoginForm).Run(); err != nil {
     panic(err)
   }
 }
