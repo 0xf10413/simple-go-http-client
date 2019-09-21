@@ -1,125 +1,125 @@
 package main
 
 import (
-  "log"
-  "time"
-  "fmt"
-  "io"
+  "github.com/rivo/tview"
+	"github.com/gdamore/tcell"
   "net/http"
+  "fmt"
+  "io/ioutil"
+  "time"
   "encoding/json"
   "strings"
-  "io/ioutil"
-  ui "github.com/gizak/termui/v3"
-  "github.com/gizak/termui/v3/widgets"
 )
 
-func main() {
-  if err := ui.Init(); err != nil {
-  log.Fatalf("failed to initialize termui: %v", err)
-}
-  defer ui.Close()
+func refreshProxyInfo(app *tview.Application, textView *tview.TextView,
+  list *tview.List) {
+  // TODO: protect against consecutive calls
 
-  // Set up main page
-  mainPageHello := widgets.NewParagraph()
-  mainPageHello.Title = "Short Demo"
-  mainPageHello.Text = "Welcome to this short demo!"
-  mainPageGrid := ui.NewGrid()
-  mainPageGrid.Set(
-    ui.NewRow(1.0,
-      ui.NewCol(1.0, mainPageHello),
-    ),
-  )
-  termWidth, termHeight := ui.TerminalDimensions()
-  mainPageGrid.SetRect(0, 3, termWidth, termHeight)
+  // Update the UI to inform we're about to fetch data
+  app.QueueUpdateDraw(func () {
+    textView.SetText("Query started, please wait for the result...")
+  })
 
+  // Retrieve data and format it
+  textBoxResult := "N/A"
+  var proxies []Proxy
 
-  // Set up proxy list page
-  proxyList := widgets.NewList()
-  proxyList.Title = "Proxies"
-  proxyList.WrapText = true
-  proxyListMainGrid := ui.NewGrid()
-  proxyListMainGrid.Set(
-    ui.NewRow(1.0,
-     ui.NewCol(1.0, proxyList),
-   ),
-  )
-  proxyListMainGrid.SetRect(0, 3, termWidth, termHeight)
+  resp, err := http.Get("http://localhost:8081/get-proxies")
+  if err != nil {
+    textBoxResult = fmt.Sprintf("Could not retrieve data: %s", err)
+    goto finish
+  } else {
+    defer resp.Body.Close()
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+      textBoxResult = fmt.Sprintf("Could not read data from the server: %s", err)
+      goto finish
+    }
 
-  // Set up tab pane
-  tabpane := widgets.NewTabPane("Home page (1)", "Demo (2)")
-  tabpane.SetRect(0, 0 ,termWidth, 3)
-  tabpane.Border = true
-
-  renderTab := func() {
-    switch tabpane.ActiveTabIndex {
-    case 0:
-      ui.Render(mainPageGrid)
-    case 1:
-      ui.Render(proxyListMainGrid)
+    // Compute new server list
+    bodyStr := string(body)
+    decoder := json.NewDecoder(strings.NewReader(bodyStr))
+    if err := decoder.Decode(&proxies); err != nil{
+      textBoxResult = "Got a reply from the server, but could not decode it"
+    } else {
+      textBoxResult = "Data successfully retrieved"
     }
   }
 
-  uiEvents := ui.PollEvents()
-  ticker := time.NewTicker(time.Second).C
-  ui.Render(mainPageGrid, tabpane)
-  renderTab()
-  for {
-    select {
-    case e := <-uiEvents:
-      switch e.ID {
-      case "q":
-        return
-      case "1":
-        tabpane.ActiveTabIndex = 0
-        ui.Clear()
-        ui.Render(tabpane)
-        renderTab()
-      case "2":
-        tabpane.ActiveTabIndex = 1
-        ui.Clear()
-        ui.Render(tabpane)
-        renderTab()
-      case "r":
-        proxyList.Rows = []string{
-          "Please wait while we retrieve the data…",
-        }
-        ui.Clear()
-        ui.Render(tabpane)
-        renderTab()
-        resp, err := http.Get("http://localhost:8081/get-proxies")
-        if err != nil {
-          proxyList.Rows = []string{
-            fmt.Sprintf("Error during data retrieval : %s", err.Error()),
-          }
-        } else {
-          defer resp.Body.Close()
-          body, _ := ioutil.ReadAll(resp.Body)
-          bodyStr := string(body)
-          decoder := json.NewDecoder(strings.NewReader(bodyStr))
-          var proxyArray []Proxy
-          if err := decoder.Decode(&proxyArray); err == io.EOF {
-            break;
-          }  else if err != nil {
-            log.Fatal(err)
-          }
-          var proxies []string
-          for _, proxy := range proxyArray {
-            proxies = append(proxies, fmt.Sprintf("%s: %s-%s",
-              proxy.Name, proxy.IP, proxy.Port))
-          }
-          proxyList.Rows = proxies
-        }
-        ui.Clear()
-        ui.Render(tabpane)
-        renderTab()
-     //case "<Resize>":
-     //  payload := e.Payload.(ui.Resize)
-     //  width, height := payload.Width, payload.Height
-     //  mainPageGrid.SetRect(0, 0, width, height)
-     //  ui.Render(mainPageGrid)
-      }
-    case <- ticker:
-      //ui.Render(mainPageGrid)
+finish:
+  // Prefix the result by current time for tracability
+  textBoxResult = fmt.Sprintf("%s: %s", time.Now().String(), textBoxResult)
+
+  // Update text box and list of servers (if applicable)
+  app.QueueUpdateDraw(func () {
+    if len(proxies) > 0 {
+      list.Clear()
     }
+    for index, proxy := range proxies {
+      list.AddItem(proxy.Name, fmt.Sprintf("%s:%s", proxy.IP, proxy.Port),
+      rune(index+int('a')), nil)
+    }
+    textView.SetText(textBoxResult)
+  })
+}
+
+func main() {
+  app := tview.NewApplication()
+
+  // Set up global layoyt
+  pageInfo := tview.NewTextView().
+                  SetDynamicColors(true).
+                  SetRegions(true).
+                  SetWrap(false).
+                  SetText(`F1 ["1"]HomePage[""]  F2 ["2"]Proxies[""]`)
+  pageInfo.Highlight("1")
+
+  pages := tview.NewPages()
+  globalLayout := tview.NewFlex().
+                  SetDirection(tview.FlexRow).
+                  AddItem(pageInfo, 1, 1, false).
+                  AddItem(pages, 0, 1, true)
+
+  // Set up main page
+  mainPageHello := tview.NewBox().
+                  SetBorder(true).
+                  SetTitle("Short demo")
+  mainPageGrid := tview.NewGrid().
+                  SetBorders(true).
+                  AddItem(mainPageHello, 0, 0, 1, 1, 1, 1, false)
+  pages.AddPage("HomePage", mainPageGrid, true, true)
+
+  // Set up proxy list page
+  proxyList := tview.NewList()
+  proxyInfo := tview.NewTextView().
+               SetText("Press <F5> to retrieve proxy information")
+  proxyListMainGrid := tview.NewGrid().
+                       SetRows(3, 0, 3).
+                       SetColumns(30, 0, 30).
+                       SetBorders(true).
+                       AddItem(proxyInfo, 0, 0, 1, 3, 0, 0, true).
+                       AddItem(proxyList, 1, 0, 1, 3, 0, 0, true)
+  pages.AddPage("Proxies", proxyListMainGrid, true, false)
+
+  // Install event handler
+  app.SetInputCapture(func (event *tcell.EventKey) *tcell.EventKey {
+    if event.Key() == tcell.KeyEsc {
+      app.Stop()
+    } else if event.Key() == tcell.KeyF1 {
+      pages.SwitchToPage("HomePage")
+      pageInfo.Highlight("1")
+    } else if event.Key() == tcell.KeyF2 {
+      pages.SwitchToPage("Proxies")
+      pageInfo.Highlight("2")
+      app.SetFocus(proxyList)
+    } else if event.Key() == tcell.KeyF5 {
+      go refreshProxyInfo(app, proxyInfo, proxyList)
+    }
+    return event
+  })
+
+  // Run application
+  if err := app.SetRoot(globalLayout, true).Run(); err != nil {
+    panic(err)
   }
 }
