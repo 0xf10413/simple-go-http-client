@@ -69,11 +69,20 @@ finish:
 
 func doLogin(client *http.Client, formData url.Values,textView *tview.TextView,
   app *tview.Application) {
-  // TODO: add message before waiting
+  // TODO: protect against consecutive calls
+  newJar, _ := cookiejar.New(nil)
+  client.Jar = newJar
+
+  app.QueueUpdateDraw(func () {
+    textView.SetText("Query started, please wait for the result...")
+  })
+
   resp, err := client.PostForm("http://localhost:8081/login", formData)
   resultText := "<N/A>"
   if err != nil {
     resultText = "Could not login to the server"
+  } else if resp.StatusCode != 200 {
+    resultText = fmt.Sprintf("Auth failed! Got error code %d", resp.StatusCode)
   } else {
     resultText = "Login successful!"
   }
@@ -86,7 +95,7 @@ func doLogin(client *http.Client, formData url.Values,textView *tview.TextView,
 func main() {
   cookieJar, _ := cookiejar.New(nil)
   transport := &http.Transport{
-    IdleConnTimeout: 30*time.Second,
+    IdleConnTimeout: 5*time.Second,
   }
   client := &http.Client{Transport: transport, Jar: cookieJar}
 
@@ -111,11 +120,13 @@ func main() {
   mainPageLoginForm := tview.NewForm().
                        AddInputField("Login", "", 20, nil, nil).
                        AddPasswordField("Password", "", 20, '*', nil).
-                       AddDropDown("Server", []string{"http://localhost:8081/",}, 0, nil).
-                       AddButton("Log in", func () {
+                       AddDropDown("Server", []string{"http://localhost:8081/",}, 0, nil)
+  mainPageLoginForm.AddButton("Log in", func () {
                          formData := url.Values{
-                           "username": {"flo"},
-                           "password": {"flo"},
+                           "username": {
+                             mainPageLoginForm.GetFormItemByLabel("Login").(*tview.InputField).GetText()},
+                           "password": {
+                             mainPageLoginForm.GetFormItemByLabel("Password").(*tview.InputField).GetText()},
                          }
                          go doLogin(client, formData, mainPageResultTest, app)
                        })

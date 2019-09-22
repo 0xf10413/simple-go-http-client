@@ -21,6 +21,8 @@ def index():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
+        if request.form['username'] != "flo" or request.form['password'] != 'pass':
+            return '''Incorrect login/password''', 403
         session['username'] = request.form['username']
         return redirect(url_for('index'))
     return '''
